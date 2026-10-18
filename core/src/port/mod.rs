@@ -62,6 +62,25 @@ pub enum PortBackend {
     Serial,
 }
 
+impl PortBackend {
+    /// The concrete backends to try, in priority order, when resolving
+    /// [`PortBackend::Auto`]. Mirrors the order used by
+    /// [`PortType::find_and_open`], so callers that open devices themselves can
+    /// reproduce its "fall back to the next backend when a device can't be
+    /// opened" behaviour (e.g. a MediaTek port bound to the VCOM serial driver,
+    /// which nusb/libusb can't claim).
+    pub fn auto_candidates() -> Vec<Self> {
+        let mut candidates = Vec::new();
+        #[cfg(feature = "nusb")]
+        candidates.push(Self::Usb);
+        #[cfg(feature = "rusb")]
+        candidates.push(Self::Libusb);
+        #[cfg(feature = "serial")]
+        candidates.push(Self::Serial);
+        candidates
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 #[enum_dispatch(MtkPort)]
 pub enum PortType {

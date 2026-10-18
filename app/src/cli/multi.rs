@@ -22,7 +22,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use colored::Colorize;
-use penumbra::port::PortType;
+use penumbra::port::{PortBackend, PortType};
 use penumbra::{DeviceBuilder, MtkPort};
 
 use crate::cli::helpers::{enable_multi_progress, set_device_label};
@@ -82,36 +82,30 @@ pub fn run_multi(args: &CliArgs, command: Commands, state: &PersistedDeviceState
 
     let vid = args.vid;
     let pid = args.pid;
-    let backend = args.backend;
+    let configured_backend = args.backend;
+    // With `Auto`, the first backend that actually *opens* a device wins and is
+    // reused for the rest of the session (MediaTek devices on one host share a
+    // driver). This mirrors `find_and_open`'s per-backend open fallback, which
+    // the single-device path relies on to reach VCOM serial ports.
+    let mut locked_backend: Option<PortBackend> = None;
 
     let mut seen: HashSet<String> = HashSet::new();
     let mut workers: Vec<thread::JoinHandle<()>> = Vec::new();
 
     while !stop.load(Ordering::Relaxed) {
-        match PortType::find_all(vid, pid, backend) {
-            Ok(ports) => {
-                for port in ports {
-                    let uid = port.uid();
+        for (port, uid) in
+            discover_new_devices(vid, pid, configured_backend, &mut locked_backend, &seen)
+        {
+            seen.insert(uid.clone());
 
-                    // Already flashing (or finished) this physical device.
-                    if !seen.insert(uid.clone()) {
-                        continue;
-                    }
+            let shared = Arc::clone(&shared);
+            let handle = thread::Builder::new()
+                .name(format!("flash-{uid}"))
+                .spawn(move || flash_device(port, uid, &shared))
+                // A spawn failure shouldn't abort the whole watcher.
+                .expect("failed to spawn flashing worker");
 
-                    let shared = Arc::clone(&shared);
-                    let handle = thread::Builder::new()
-                        .name(format!("flash-{uid}"))
-                        .spawn(move || flash_device(port, uid, &shared))
-                        // A spawn failure shouldn't abort the whole watcher.
-                        .expect("failed to spawn flashing worker");
-
-                    workers.push(handle);
-                }
-            }
-            Err(e) => {
-                // Transient enumeration errors shouldn't kill the watcher.
-                log::warn!("Device scan failed: {e}");
-            }
+            workers.push(handle);
         }
 
         // Reap finished workers so the list doesn't grow unbounded.
@@ -128,13 +122,72 @@ pub fn run_multi(args: &CliArgs, command: Commands, state: &PersistedDeviceState
     Ok(())
 }
 
-/// Opens a single discovered port, brings the device up, and runs the command.
+/// Discovers newly connected devices and returns them **already opened**,
+/// paired with their uid.
+///
+/// For an explicit `--backend`, only that backend is used. For `Auto`, the
+/// backend that first manages to open a device is locked in via `locked` and
+/// reused on later scans; until then every candidate backend is tried in
+/// priority order, so a device whose driver one backend can't claim (e.g. a
+/// MediaTek VCOM serial port rejected by nusb/libusb) still gets opened by the
+/// next one. Devices already in `seen` are skipped, and a uid is only ever
+/// considered handled once it has been opened successfully — so a failed open
+/// on the wrong backend doesn't block the right one.
+fn discover_new_devices(
+    vid: Option<u16>,
+    pid: Option<u16>,
+    configured_backend: PortBackend,
+    locked: &mut Option<PortBackend>,
+    seen: &HashSet<String>,
+) -> Vec<(PortType, String)> {
+    let candidates = match configured_backend {
+        PortBackend::Auto => (*locked).map_or_else(PortBackend::auto_candidates, |b| vec![b]),
+        explicit => vec![explicit],
+    };
+
+    for backend in candidates {
+        let ports = match PortType::find_all(vid, pid, backend) {
+            Ok(ports) => ports,
+            Err(e) => {
+                log::warn!("Device scan failed on {backend:?}: {e}");
+                continue;
+            }
+        };
+
+        let mut opened = Vec::new();
+        for mut port in ports {
+            let uid = port.uid();
+            if seen.contains(&uid) {
+                continue;
+            }
+
+            match port.open() {
+                Ok(()) => opened.push((port, uid)),
+                Err(e) => log::debug!("[{uid}] can't open on {backend:?}: {e}"),
+            }
+        }
+
+        if !opened.is_empty() {
+            // This backend works here; stick with it (only meaningful for Auto).
+            if configured_backend == PortBackend::Auto {
+                *locked = Some(backend);
+            }
+            return opened;
+        }
+    }
+
+    Vec::new()
+}
+
+/// Brings an already-opened device up and runs the command against it.
 ///
 /// Each device gets its own [`PersistedDeviceState`] (defaulted, never written
 /// back to disk) so concurrent sessions never share cached device info.
 fn flash_device(mut port: PortType, uid: String, shared: &SharedParams) {
     set_device_label(uid.clone());
 
+    // The port was already opened during discovery; this is a cheap no-op that
+    // also guards against a future refactor handing over an unopened port.
     if let Err(e) = port.open() {
         log::error!("[{uid}] failed to open port: {e}");
         return;
