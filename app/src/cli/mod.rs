@@ -6,6 +6,7 @@ pub mod commands;
 pub mod common;
 pub mod helpers;
 pub mod macros;
+pub mod multi;
 pub mod state;
 
 use std::path::PathBuf;
@@ -175,4 +176,16 @@ pub fn run_cli(args: &CliArgs, _config: &AntumbraConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Entry point for multi-device mode (`multi <command>`), which flashes every
+/// connected device in parallel, each with its own session and progress bar.
+pub fn run_cli_multi(mut args: CliArgs, _config: &AntumbraConfig) -> Result<()> {
+    let Some(command) = args.command.take() else {
+        CliArgs::command().print_help()?;
+        return Ok(());
+    };
+
+    let state = PersistedDeviceState::load();
+    multi::run_multi(&args, command, &state)
 }

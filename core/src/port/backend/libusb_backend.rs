@@ -18,6 +18,7 @@ pub struct LibUsbMTKPort {
     conn_type: ConnectionType,
     is_open: bool,
     port_name: String,
+    uid: String,
     in_endpoint: u8,
     out_endpoint: u8,
     timeout: Duration,
@@ -36,6 +37,7 @@ impl LibUsbMTKPort {
         handle: DeviceHandle<Context>,
         conn_type: ConnectionType,
         port_name: String,
+        uid: String,
         in_endpoint: u8,
         out_endpoint: u8,
     ) -> Self {
@@ -44,6 +46,7 @@ impl LibUsbMTKPort {
             conn_type,
             is_open: false,
             port_name,
+            uid,
             in_endpoint,
             out_endpoint,
             timeout: MIN_TIMEOUT,
@@ -124,10 +127,13 @@ impl LibUsbMTKPort {
             .unwrap_or(ConnectionType::Preloader);
 
         let port_name = format!("USB {:04X}:{:04X} (libusb)", vid, pid);
+        // Physical topology is stable while the device stays on the same port,
+        // which is enough to tell concurrently connected devices apart.
+        let uid = format!("{:04X}:{:04X}@{}-{}", vid, pid, device.bus_number(), device.address(),);
         let handle = device.open().ok()?;
         let (in_endpoint, out_endpoint) = Self::find_bulk_endpoints(device)?;
 
-        Some(Self::new(handle, connection_type, port_name, in_endpoint, out_endpoint))
+        Some(Self::new(handle, connection_type, port_name, uid, in_endpoint, out_endpoint))
     }
 
     pub fn find_device(vid: Option<u16>, pid: Option<u16>) -> Result<Option<Self>> {
@@ -159,6 +165,38 @@ impl LibUsbMTKPort {
         }
 
         Ok(None)
+    }
+
+    /// Enumerates every connected device matching the filter, instead of
+    /// returning only the first one like [`find_device`](Self::find_device).
+    pub fn find_all_devices(vid: Option<u16>, pid: Option<u16>) -> Result<Vec<Self>> {
+        let context = Context::new()?;
+        let devices = context.devices()?;
+        let mut ports = Vec::new();
+
+        for device in devices.iter() {
+            let Ok(descriptor) = device.device_descriptor() else {
+                continue;
+            };
+
+            let dev_vid = descriptor.vendor_id();
+            let dev_pid = descriptor.product_id();
+
+            let matches_filter = vid.is_none_or(|v| v == dev_vid)
+                && pid.is_none_or(|p| p == dev_pid)
+                && (vid.is_some() || pid.is_some());
+
+            let matches_known =
+                KNOWN_PORTS.iter().any(|&(k_vid, k_pid, _)| dev_vid == k_vid && dev_pid == k_pid);
+
+            if (matches_filter || matches_known)
+                && let Some(port) = Self::from_device(&device)
+            {
+                ports.push(port);
+            }
+        }
+
+        Ok(ports)
     }
 }
 
@@ -312,6 +350,10 @@ impl MtkPort for LibUsbMTKPort {
 
     fn get_port_name(&self) -> String {
         self.port_name.clone()
+    }
+
+    fn uid(&self) -> String {
+        self.uid.clone()
     }
 
     fn set_timeout(&mut self, timeout: Duration) -> Result<()> {

@@ -7,7 +7,7 @@ use std::fs::{metadata, read, remove_file, write};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Default, Debug)]
+#[derive(Serialize, Deserialize, Default, Debug, Clone)]
 pub struct PersistedDeviceState {
     pub da_file_path: Option<String>,
     pub soc_id: [u8; 32],

@@ -309,6 +309,28 @@ impl MtkPort for UsbMTKPort {
         format!("USB {:04X}:{:04X}", self.info.vendor_id(), self.info.product_id())
     }
 
+    fn uid(&self) -> String {
+        // Prefer the serial number when the device exposes one; otherwise fall
+        // back to the physical topology (bus + port chain + address), which is
+        // stable for as long as the device stays plugged into the same port.
+        if let Some(serial) = self.info.serial_number() {
+            return format!(
+                "{:04X}:{:04X}@{serial}",
+                self.info.vendor_id(),
+                self.info.product_id()
+            );
+        }
+
+        format!(
+            "{:04X}:{:04X}@{}-{:?}-{}",
+            self.info.vendor_id(),
+            self.info.product_id(),
+            self.info.bus_id(),
+            self.info.port_chain(),
+            self.info.device_address(),
+        )
+    }
+
     fn set_timeout(&mut self, timeout: Duration) -> Result<()> {
         let writer = self.writer.as_mut().ok_or(ConnectionError::PortNotOpen)?;
         let reader = self.reader.as_mut().ok_or(ConnectionError::PortNotOpen)?;
@@ -428,5 +450,33 @@ impl UsbMTKPort {
         }
 
         Ok(None)
+    }
+
+    /// Enumerates every connected device matching the filter, instead of
+    /// returning only the first one like [`find_device`](Self::find_device).
+    pub fn find_all_devices(vid: Option<u16>, pid: Option<u16>) -> Result<Vec<Self>> {
+        let devices = nusb::list_devices().wait()?;
+        let mut ports = Vec::new();
+
+        for device in devices {
+            let dev_vid = device.vendor_id();
+            let dev_pid = device.product_id();
+
+            if vid.is_none_or(|v| v == dev_vid)
+                && pid.is_none_or(|p| p == dev_pid)
+                && (vid.is_some() || pid.is_some())
+            {
+                ports.push(Self::new(device, ConnectionType::Preloader));
+                continue;
+            }
+
+            if let Some((_, _, conn)) =
+                KNOWN_PORTS.iter().find(|(k_vid, k_pid, _)| dev_vid == *k_vid && dev_pid == *k_pid)
+            {
+                ports.push(Self::new(device, conn.to_owned()));
+            }
+        }
+
+        Ok(ports)
     }
 }

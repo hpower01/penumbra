@@ -86,6 +86,45 @@ macro_rules! cli_commands {
                     )*
                 }
             }
+
+            /// Runs a device command against an already-connected device.
+            ///
+            /// Unlike [`execute`](Self::execute), this does not discover or
+            /// build the device: the caller owns the port/session. This is what
+            /// multi-device mode uses to drive one device per worker thread.
+            ///
+            /// CLI-only commands have no device to run against and return an
+            /// error.
+            pub fn run_on_device<P: penumbra::MtkPort>(
+                &self,
+                dev: &mut penumbra::Device<P>,
+                state: &mut $crate::cli::state::PersistedDeviceState,
+            ) -> anyhow::Result<()> {
+                match self {
+                    $(
+                        Commands::$dev_variant(inner) => {
+                            $crate::cli::DeviceCommand::run(inner, dev, state)
+                        }
+                    )*
+                    $(
+                        Commands::$loc_variant(_) => {
+                            anyhow::bail!(
+                                "`{}` is not a device command and cannot run in multi-device mode",
+                                stringify!($loc_variant),
+                            )
+                        }
+                    )*
+                }
+            }
+
+            /// Whether this command operates on a device (and is therefore
+            /// usable in multi-device mode).
+            pub const fn is_device_command(&self) -> bool {
+                match self {
+                    $( Commands::$dev_variant(_) => true, )*
+                    $( Commands::$loc_variant(_) => false, )*
+                }
+            }
         }
     };
 }

@@ -170,6 +170,60 @@ impl PortType {
 
         Ok(None)
     }
+
+    /// Enumerates every matching, currently connected device instead of just
+    /// the first one. Used by multi-device mode to discover ports to flash in
+    /// parallel. The returned ports are not opened.
+    ///
+    /// With [`PortBackend::Auto`], the first backend that reports any device
+    /// wins, so the same physical device is never returned twice through
+    /// different backends.
+    pub fn find_all(vid: Option<u16>, pid: Option<u16>, backend: PortBackend) -> Result<Vec<Self>> {
+        match backend {
+            PortBackend::Auto => {
+                #[cfg(feature = "nusb")]
+                {
+                    let ports = UsbMTKPort::find_all_devices(vid, pid)?;
+                    if !ports.is_empty() {
+                        return Ok(ports.into_iter().map(Self::Usb).collect());
+                    }
+                }
+
+                #[cfg(feature = "rusb")]
+                {
+                    let ports = LibUsbMTKPort::find_all_devices(vid, pid)?;
+                    if !ports.is_empty() {
+                        return Ok(ports.into_iter().map(Self::Libusb).collect());
+                    }
+                }
+
+                #[cfg(feature = "serial")]
+                {
+                    let ports = SerialMTKPort::find_all_devices(vid, pid)?;
+                    if !ports.is_empty() {
+                        return Ok(ports.into_iter().map(Self::Serial).collect());
+                    }
+                }
+
+                Ok(Vec::new())
+            }
+
+            #[cfg(feature = "nusb")]
+            PortBackend::Usb => {
+                Ok(UsbMTKPort::find_all_devices(vid, pid)?.into_iter().map(Self::Usb).collect())
+            }
+            #[cfg(feature = "rusb")]
+            PortBackend::Libusb => Ok(LibUsbMTKPort::find_all_devices(vid, pid)?
+                .into_iter()
+                .map(Self::Libusb)
+                .collect()),
+            #[cfg(feature = "serial")]
+            PortBackend::Serial => Ok(SerialMTKPort::find_all_devices(vid, pid)?
+                .into_iter()
+                .map(Self::Serial)
+                .collect()),
+        }
+    }
 }
 
 #[enum_dispatch]
@@ -246,6 +300,16 @@ pub trait MtkPort: Send {
 
     fn get_baudrate(&self) -> u32;
     fn get_port_name(&self) -> String;
+    /// A stable identifier that is unique per physically connected device.
+    ///
+    /// Unlike [`get_port_name`](Self::get_port_name), which only reflects the
+    /// VID/PID (and is therefore identical for two of the same device), this is
+    /// meant to tell concurrently connected devices apart, e.g. when flashing
+    /// several of them in parallel. Backends that can't do better fall back to
+    /// the port name.
+    fn uid(&self) -> String {
+        self.get_port_name()
+    }
     fn set_timeout(&mut self, timeout: Duration) -> Result<()>;
     fn get_timeout(&self) -> Duration;
     fn connection_type(&self) -> ConnectionType;

@@ -22,14 +22,31 @@ mod logger;
 
 use anyhow::Result;
 use clap::Parser;
-use cli::{CliArgs, run_cli};
+use cli::{CliArgs, run_cli, run_cli_multi};
 use logger::init_logger;
 
 use crate::auth::init_auth;
 use crate::config::AntumbraConfig;
 
 fn main() -> Result<()> {
-    let args = CliArgs::parse();
+    // `multi` is a mode keyword typed before the command (e.g.
+    // `antumbra multi wf boot boot.img`). It isn't a clap subcommand, so strip
+    // the first standalone `multi` token before parsing and remember it.
+    let mut multi = false;
+    let filtered_args: Vec<std::ffi::OsString> = std::env::args_os()
+        .enumerate()
+        .filter(|(i, a)| {
+            if *i != 0 && !multi && a.to_str() == Some("multi") {
+                multi = true;
+                false
+            } else {
+                true
+            }
+        })
+        .map(|(_, a)| a)
+        .collect();
+
+    let args = CliArgs::parse_from(filtered_args);
 
     #[cfg(all(windows, feature = "tui"))]
     let tui = args.tui || !cli_or_gui::is_launched_from_terminal();
@@ -44,7 +61,14 @@ fn main() -> Result<()> {
     init_auth(config.clone())?;
 
     if !tui || !cfg!(feature = "tui") {
+        if multi {
+            return run_cli_multi(args, &config);
+        }
         return run_cli(&args, &config);
+    }
+
+    if multi {
+        anyhow::bail!("multi-device mode is only available in CLI mode, not the TUI");
     }
 
     #[cfg(feature = "tui")]

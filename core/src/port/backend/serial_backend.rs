@@ -96,6 +96,40 @@ impl SerialMTKPort {
 
         Ok(None)
     }
+
+    /// Enumerates every connected device matching the filter, instead of
+    /// returning only the first one like [`find_device`](Self::find_device).
+    ///
+    /// The serial port name (e.g. `/dev/ttyACM0`) is already unique per
+    /// device, so the default [`MtkPort::uid`] is sufficient here.
+    pub fn find_all_devices(vid: Option<u16>, pid: Option<u16>) -> Result<Vec<Self>> {
+        let serial_ports = serialport::available_ports().unwrap_or_default();
+        let mut ports = Vec::new();
+
+        for port_info in serial_ports.iter().rev() {
+            let SerialPortType::UsbPort(usb_info) = &port_info.port_type else {
+                continue;
+            };
+
+            let dev_vid = usb_info.vid;
+            let dev_pid = usb_info.pid;
+
+            let matches_filter = vid.is_none_or(|v| v == dev_vid)
+                && pid.is_none_or(|p| p == dev_pid)
+                && (vid.is_some() || pid.is_some());
+
+            let matches_known =
+                KNOWN_PORTS.iter().any(|&(k_vid, k_pid, _)| dev_vid == k_vid && dev_pid == k_pid);
+
+            if (matches_filter || matches_known)
+                && let Some(port) = Self::from_port_info(port_info)
+            {
+                ports.push(port);
+            }
+        }
+
+        Ok(ports)
+    }
 }
 
 impl MtkPort for SerialMTKPort {
