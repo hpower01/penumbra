@@ -68,16 +68,17 @@ pub fn run_multi(args: &CliArgs, command: Commands, state: &PersistedDeviceState
     });
 
     // One shared MultiProgress so every device's bar gets its own line.
-    enable_multi_progress();
+    let multi = enable_multi_progress();
 
     let stop = Arc::new(AtomicBool::new(false));
     spawn_stop_watcher(Arc::clone(&stop));
 
-    println!(
-        "{}",
+    // Print through the MultiProgress so lines scroll above the bars.
+    let _ = multi.println(
         "Multi-device mode: connect devices to start flashing. Press Enter (or Ctrl-C) to stop."
             .bold()
             .magenta()
+            .to_string(),
     );
 
     let vid = args.vid;
@@ -114,7 +115,9 @@ pub fn run_multi(args: &CliArgs, command: Commands, state: &PersistedDeviceState
         thread::sleep(SCAN_INTERVAL);
     }
 
-    println!("{}", "Stopping: waiting for in-progress flashes to finish...".bold().yellow());
+    let _ = multi.println(
+        "Stopping: waiting for in-progress flashes to finish...".bold().yellow().to_string(),
+    );
     for handle in workers {
         let _ = handle.join();
     }

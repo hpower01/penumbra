@@ -3,12 +3,35 @@
     SPDX-FileCopyrightText: 2025-2026 Shomy
 */
 use std::fs::File;
-use std::io::Write;
+use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 
 use colored::Colorize;
 use env_logger::fmt::Formatter;
 use log::{Level, LevelFilter, Record};
+
+use crate::cli::helpers::multi_progress;
+
+/// stdout sink that, when multi-device progress bars are active, prints each
+/// log line through the shared [`MultiProgress`] so it scrolls above the bars
+/// instead of corrupting them. Without active bars it writes straight to
+/// stdout, exactly like the default target.
+struct ProgressAwareStdout;
+
+impl Write for ProgressAwareStdout {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match multi_progress() {
+            // `suspend` hides the bars, prints, then redraws them below.
+            Some(multi) => multi.suspend(|| io::stdout().write_all(buf))?,
+            None => io::stdout().write_all(buf)?,
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        io::stdout().flush()
+    }
+}
 
 pub const LOG_FILE_PATH: &str = "antumbra.log";
 pub const LOGGER_PREIX: &str = "Antumbra";
@@ -65,6 +88,6 @@ pub fn init_logger(tui_mode: bool, verbose: bool) {
     builder.filter_level(if verbose { LevelFilter::Debug } else { LevelFilter::Info });
     builder.filter_module("nusb", LevelFilter::Off); // Annoying logs :D
 
-    builder.target(env_logger::Target::Stdout);
+    builder.target(env_logger::Target::Pipe(Box::new(ProgressAwareStdout)));
     builder.init();
 }

@@ -28,6 +28,12 @@ pub fn enable_multi_progress() -> &'static MultiProgress {
     MULTI.get_or_init(MultiProgress::new)
 }
 
+/// The shared [`MultiProgress`], if multi-device rendering is active. Used by
+/// the logger to print log lines without corrupting the live progress bars.
+pub fn multi_progress() -> Option<&'static MultiProgress> {
+    MULTI.get()
+}
+
 /// Associates the calling thread with a device label, shown as a prefix on any
 /// progress bar it creates afterwards.
 pub fn set_device_label(label: impl Into<String>) {
